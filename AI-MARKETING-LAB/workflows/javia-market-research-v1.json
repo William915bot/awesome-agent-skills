@@ -1,0 +1,227 @@
+{
+  "name": "Javia AI Lab - Public Market Research Agent V1 (Manual Review)",
+  "nodes": [
+    {
+      "id": "jv-manual",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        160
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "jv-github",
+      "name": "GitHub Public Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -480,
+        40
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.github.com/search/repositories",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "ai agent marketing automation in:name,description,readme stars:>20"
+            },
+            {
+              "name": "sort",
+              "value": "updated"
+            },
+            {
+              "name": "order",
+              "value": "desc"
+            },
+            {
+              "name": "per_page",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "jv-hn",
+      "name": "Hacker News Public Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -480,
+        280
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search_by_date",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "query",
+              "value": "AI agents automation"
+            },
+            {
+              "name": "tags",
+              "value": "story"
+            },
+            {
+              "name": "hitsPerPage",
+              "value": "20"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "jv-merge",
+      "name": "Merge Public Sources",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -240,
+        160
+      ],
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "jv-normalize",
+      "name": "Normalize + Evidence Guard",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -20,
+        160
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Normalize two public API responses. Work only with supplied data; no secrets.\nconst incoming = $input.all().map(item => item.json);\nconst rows = [];\nfor (const payload of incoming) {\n  if (Array.isArray(payload.items)) {\n    for (const r of payload.items) {\n      rows.push({kind:'github',title:r.full_name || r.name,url:r.html_url,\n        description:(r.description || '').slice(0,280),\n        stars:r.stargazers_count || 0,updated_at:r.updated_at || null});\n    }\n  }\n  if (Array.isArray(payload.hits)) {\n    for (const r of payload.hits) {\n      const url = r.url || (r.objectID ? 'https://news.ycombinator.com/item?id=' + r.objectID : '');\n      rows.push({kind:'hn',title:r.title || r.story_title || '',url,\n        description:'Hacker News discussion / public story',\n        points:r.points || 0,updated_at:r.created_at || null});\n    }\n  }\n}\nconst seen = new Set();\nconst selected = rows.filter(r => {\n  if (!r.title || !/^https:\\/\\//.test(r.url || '') || seen.has(r.url)) return false;\n  seen.add(r.url); return true;\n}).filter(r=>/(ai|agent|automation|marketing|workflow|llm|mcp|codex|github|n8n)/i.test(r.title+' '+r.description))\n.sort((a,b)=>(b.kind==='github'?b.stars:b.points || 0)-(a.kind==='github'?a.stars:a.points || 0))\n.slice(0,18);\nif (!selected.length) return [{json:{prompt:'沒有取得可靠候選來源。請回報資料收集失敗，不要編造。',sources:[]}}];\nreturn [{json:{\n  checked_at:new Date().toISOString(),\n  sources:selected,\n  prompt:'請根據以下真實來源元資料（不是全文）提出 Javia AI Lab 的研究選題與實驗：\\n'+JSON.stringify(selected,null,2)\n}}];"
+      }
+    },
+    {
+      "id": "jv-agent",
+      "name": "Javia Research AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        230,
+        160
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {
+          "systemMessage": "你是 Javia AI Lab 的 AI Research Analyst。輸入僅包含一批 GitHub 與 Hacker News 的公開來源元資料。不得宣稱已讀取未提供的全文、原始碼或使用者私有資料。不得捏造星數、日期、價格、功能或安裝成功。必須提供原始來源 URL。以繁體中文回答；首先挑出最具實作可能的 3 個主題（每個有來源連結、原因、適合誰、需查證的地方），再提出 1 個可在一週內做出的低成本小實驗（目標、步驟、驗收標準），最後寫 Threads 與 LinkedIn 兩個簡短的貼文切角。所有內容視為研究草稿，等待人類確認，不執行發布。",
+          "returnIntermediateSteps": false
+        }
+      }
+    },
+    {
+      "id": "jv-model",
+      "name": "OpenAI Chat Model - Connect Credential",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        230,
+        400
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4.1-mini"
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "GitHub Public Search",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Hacker News Public Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GitHub Public Search": {
+      "main": [
+        [
+          {
+            "node": "Merge Public Sources",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hacker News Public Search": {
+      "main": [
+        [
+          {
+            "node": "Merge Public Sources",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Public Sources": {
+      "main": [
+        [
+          {
+            "node": "Normalize + Evidence Guard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize + Evidence Guard": {
+      "main": [
+        [
+          {
+            "node": "Javia Research AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model - Connect Credential": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Javia Research AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
